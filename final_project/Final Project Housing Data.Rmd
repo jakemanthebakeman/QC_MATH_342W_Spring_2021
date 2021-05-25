@@ -1,0 +1,215 @@
+---
+title: 'Final Project: Housing Data'
+author: "Jacob Minkin"
+date: "May 19, 2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+## Intro
+
+We start this project by loading the data from GitHub.
+```{r setup}
+rm(list = ls())
+pacman::p_load(tidyverse,data.table, R.utils, stringr,missForest, YARF, mlr )
+options(java.parameters = "-Xmx8000m")
+housing_data = fread("https://raw.githubusercontent.com/kapelner/QC_MATH_342W_Spring_2021/master/writing_assignments/housing_data_2016_2017.csv")
+
+Northeast_Queens_zip = c(11361, 11362, 11363, 11364)
+North_Queens_zip = c(11354, 11355, 11356, 11357, 11358, 11359, 11360)
+Central_Queens_zip = c(11365, 11366, 11367)
+Jamaica_zip = c(11412, 11423, 11432, 11433, 11434, 11435, 11436)
+Northwest_Queens_zip = c(11101, 11102, 11103, 11104, 11105, 11106)
+West_Central_Queens_zip = c(11374, 11375, 11379, 11385)
+Southeast_Queens_zip = c(11004, 11005, 11411, 11413, 11422, 11426, 11427, 11428, 11429)
+Southwest_Queens_zip = c(11414, 11415, 11416, 11417, 11418, 11419, 11420, 11421)
+West_Queens_zip = c(11368, 11369, 11370, 11372, 11373, 11377, 11378)
+```
+
+## Remove Garbage
+
+ First we are only predicting on data that includes the sale pricel. We remove all data that does not include the sale price.
+
+ The important features start with 'approx_year_built'. Remove 'url', 'common_charges', 'model_type', 'date_of_sale', and 'listing_price_to_nearest_1000'. Also remove 'sq_footage' 'parking_charge' and 'total_taxes' because too much is missing.
+
+```{r remove garbage}
+no_garabge_data = housing_data %>% 
+ # filter(!is.na(sale_price)) %>% 
+  select(approx_year_built:last_col(), -url, -common_charges, -model_type, -date_of_sale, -listing_price_to_nearest_1000, -parking_charges)
+
+table(no_garabge_data$coop_condo, exclude = NaN)
+```
+
+## Manipulating Data
+
+Here is a list of manipulations
+1. Pets allowed is a combo of cats and dogs allowed. if one pet is allowed then pets allowed is true.
+2. fuel type is cleaned by combining others. Some were capitalized.
+3. sq footage was factorized into small medium large super large and unknown.
+4. Garage exists takes all the na's and makes them no. All others are yes.
+5. Missing half bathrooms are set to zero.
+6. In the dining_room_type, we assume 'dining area' is considered 'formal'. Set 'NA' as "unknown".
+7. In the 'kitchen_type' feature, there was a observation from 'approx_year_built'. Added that data back and cleaned the rest of 'kitchen_type'
+8. Converted 'maintenance_cost' and 'parking_charges' into numerics by removing the dollar sign and the comma.
+7. Get zip_code from 'full_address_or_zip_code' and sort it into regions.
+8. Made 'decade_built' from approx_year_built
+9. Finally put 'sale_price' in front and remove 'zip_code', 'full_address_or_zip_code' and 'approx_year_built'.
+
+```{r manipulations}
+manipulated_data = no_garabge_data %>% 
+  
+  mutate(cats_allowed = if_else(cats_allowed == "y", "yes", cats_allowed)) %>% 
+  mutate(dogs_allowed = if_else(dogs_allowed == "yes89", "yes", dogs_allowed)) %>%
+  mutate(pets_allowed = if_else(dogs_allowed =="no" & cats_allowed == "no", "no", "yes")) %>% 
+  
+  mutate(fuel_type = if_else(fuel_type == "Other", "other", fuel_type)) %>% 
+  
+  mutate(sq_footage = as.factor(case_when(sq_footage %in% 100:600 ~ "small", sq_footage %in% 601:998 ~ "medium", sq_footage %in% 1000:1800 ~ "large", sq_footage %in% 1950:6215 ~ "super large", is.na(sq_footage) ~ "Unknown"))) %>% 
+  
+  mutate(garage_exists = if_else(is.na(garage_exists), "No", "Yes")) %>% 
+  
+  mutate(num_half_bathrooms = replace_na(num_half_bathrooms, 0)) %>% 
+  
+  mutate(dining_room_type = if_else(dining_room_type == "dining area", "formal", dining_room_type)) %>% 
+  mutate(dining_room_type = ifelse(is.na(dining_room_type), "Unknown", dining_room_type)) %>%  
+  
+  mutate(approx_year_built = if_else(kitchen_type == "1955", as.integer(1955), approx_year_built, missing = approx_year_built)) %>%  
+  mutate(kitchen_type = as.factor( case_when(kitchen_type == "combo" ~ "Combo", kitchen_type == "Combo" ~ "Combo", kitchen_type == "eat in" ~ "Eat In", ... = kitchen_type == "Eat in" ~ "Eat In", kitchen_type == "Eat In" ~ "Eat In", kitchen_type == "eatin" ~ "Eat In", str_sub(kitchen_type, start= 1, end = 3)=="eff"~ "efficiency" ))) %>% 
+
+  mutate(maintenance_cost =  as.numeric(gsub("[\\$,\\,]", "", maintenance_cost))) %>% 
+  mutate(sale_price =  as.numeric(gsub("[\\$,\\,]", "", sale_price))) %>% 
+
+  mutate(zip_code = str_sub(full_address_or_zip_code, start= -5), zip_code = if_else(zip_code == "Share", as.integer(11354), as.integer(zip_code))) %>% 
+  mutate(region = as.factor( case_when(zip_code %in% Northeast_Queens_zip  ~ "Northeast Queens", zip_code %in% North_Queens_zip  ~ "North Queens", zip_code %in% Central_Queens_zip  ~ "Central Queens", zip_code %in% Jamaica_zip  ~ "Jamaica", zip_code %in% Northwest_Queens_zip  ~ "Northwest Queens", zip_code %in% West_Central_Queens_zip  ~ "West Central Queens", zip_code %in% Southeast_Queens_zip  ~ "Southeast Queens", zip_code %in% Southwest_Queens_zip  ~ "Southwest Queens", zip_code %in% West_Queens_zip  ~ "West Queens"))) %>%  
+  
+  mutate(decade_built = as.factor(case_when(approx_year_built %in% 1915:1939 ~ "1915 - 1939", approx_year_built %in% 1940:1949 ~ "1940's", approx_year_built %in% 1950:1959 ~ "1950's", approx_year_built %in% 1960:1969 ~ "1960's", approx_year_built %in% 1970:1979 ~ "1970's", approx_year_built %in% 1980:1989 ~ "1980's", approx_year_built %in% 1990:1999 ~ "1990's", approx_year_built %in% 2000:2009 ~ "2000's", approx_year_built %in% 2010:2017 ~ "2010's"))) %>% 
+  
+  
+  
+  select(sale_price, everything(), -full_address_or_zip_code, -zip_code, -approx_year_built)
+  
+  
+ # table(manipulated_data$dining_room_type, exclude = NaN)
+```
+
+##co-op Condo cost
+There is a big difference between co-op and condo. we will seperate them into 2 data frames and find the total cost. we will then combine the cases.
+```{r}
+condo_cases = manipulated_data %>% 
+  filter(coop_condo == "condo") %>% 
+  mutate(maintenance_cost = if_else(is.na(maintenance_cost), 0, maintenance_cost)) %>% 
+  mutate(pct_tax_deductibl = if_else(is.na(pct_tax_deductibl),0, pct_tax_deductibl/100)) %>% 
+  mutate(total_taxes = parse_number(total_taxes)) %>% 
+  mutate(total_cost = maintenance_cost * (1-pct_tax_deductibl) + total_taxes)
+  
+  
+coop_cases = manipulated_data %>% 
+  filter(coop_condo == "co-op") %>% 
+  mutate(pct_tax_deductibl = if_else(is.na(pct_tax_deductibl), mean(pct_tax_deductibl, na.rm = TRUE)/100, pct_tax_deductibl/100)) %>% 
+  mutate(total_taxes = if_else(is.na(total_taxes), 0, parse_number(total_taxes))) %>% 
+  mutate(total_cost = maintenance_cost * (1-pct_tax_deductibl)+ total_taxes)
+
+data_with_cost = bind_rows(condo_cases, coop_cases) %>% 
+  select(-maintenance_cost, - pct_tax_deductibl, -total_taxes, -cats_allowed, -dogs_allowed)
+  
+#table((data_with_cost$total_cost), exclude = NaN)
+```
+
+
+##Train and Test split
+First we need to filter out the the missing sale prices. Then we will find the indicies of the split for train and test. 
+```{r}
+filtered_data = data_with_cost %>% 
+  filter(!is.na(sale_price)) %>% 
+  mutate_if(sapply(data_with_cost, is.character), as.factor)
+
+missing_sale_price = data_with_cost %>% 
+  filter(is.na(sale_price)) %>% 
+  mutate_if(sapply(data_with_cost, is.character), as.factor)
+
+data_summary = lapply(filtered_data, summary)
+print (data_summary)
+K = 4
+test_indices = sample(1 : nrow(filtered_data), round(nrow(filtered_data) / K))
+train_indices = setdiff(1 : nrow(filtered_data), test_indices)
+test_data_miss = filtered_data[test_indices, ]
+train_data_miss = filtered_data[train_indices, ]
+
+miss_data_train_combined = bind_rows(train_data_miss, missing_sale_price) %>% 
+  mutate(sale_price_dummy = if_else(is.na(sale_price), 0, 1))
+miss_data_train_combined = miss_data_train_combined %>% 
+  mutate_if(sapply(miss_data_train_combined, is.character), as.factor)
+
+ximpMF = missForest(miss_data_train_combined)
+train_data = ximpMF$ximp %>% 
+  filter(sale_price_dummy == 1) %>% 
+  select(-sale_price_dummy)
+
+y_train = train_data$sale_price
+X_train = train_data[ ,-1]
+```
+
+##Modeling
+We will build 3 models. 1. Regression Tree 2. Linear Model 3. Random Forest
+
+## Regression Tree
+```{r}
+tree_model = YARF(data.frame(x = X_train), y_train, num_trees = 1)
+tree_model
+
+```
+
+## Linear Model
+```{r}
+linear_mod = lm(sale_price ~ ., train_data)
+sd(y_train - linear_mod$fitted.values)
+summary(linear_mod)
+```
+## Random  Forest
+```{r}
+mtry_mlr= tuneRF(X_train,
+                y_train,
+                stepFactor=0.5,
+                plot=TRUE,
+                ntreeTry=300,
+                trace=TRUE,
+                improve = 0.05)
+print(mtry_mlr)
+
+```
+
+```{r}
+mod_rf = YARF(X_train, y_train, mtry = 10)
+mod_rf
+```
+
+##Performance of Random Forest
+
+```{r}
+y_test = test_data_miss$sale_price
+x_test_miss = test_data_miss %>% 
+  mutate(sale_price = -1)
+miss_data_test_combined = bind_rows(train_data_miss, missing_sale_price, x_test_miss) %>% 
+  mutate(sale_price_dummy = if_else(sale_price == -1, 1, 0)) %>% 
+  mutate(sale_price_dummy = if_else(is.na(sale_price_dummy), 0, sale_price_dummy)) %>% 
+  mutate(sale_price = na_if(sale_price, -1))
+miss_data_test_combined = miss_data_test_combined %>% 
+  mutate_if(sapply(miss_data_test_combined, is.character), as.factor)
+
+test_imputed = missForest(miss_data_test_combined)
+
+X_test = test_imputed$ximp %>% 
+  filter(sale_price_dummy == 1) %>% 
+  select(-sale_price, -sale_price_dummy)
+
+y_hat = predict(mod_rf, X_test)
+
+y_bar = mean(y_test)
+SSR = sum((y_hat-y_bar)^2)
+SST = sum((y_test-y_bar)^2)
+rsq = (SSR/SST)
+rsq
+sd(y_test - y_hat)
+```
+
